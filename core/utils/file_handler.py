@@ -1,31 +1,25 @@
 import polars as pl
 import os
 
-DATA_PATH = "data/current.csv"
+UPLOAD_DIR = "data"
 
 def save_uploaded_file(uploaded_file):
-    file_path = DATA_PATH
+    """Save uploaded file to disk and return Polars DataFrame + path."""
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
 
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
-    return file_path
+    # Load immediately as Polars DF
+    df = pl.read_csv(file_path)
+
+    return df, file_path
 
 
-def load_dataset(path=DATA_PATH):
-    try:
-        df = pl.read_csv(
-            path,
-            infer_schema_length=200000,
-            ignore_errors=True,
-            null_values=["", " ", "NA", "N/A", "-", ".", "...", "null"]
-        )
-    except Exception:
-        # ultra-safe fallback: read everything as string
-        df = pl.read_csv(
-            path,
-            dtypes={"*": pl.Utf8},
-            ignore_errors=True
-        )
-
-    return df
+def load_saved_file(file_path):
+    """Load DataFrame from disk using Polars."""
+    if os.path.exists(file_path):
+        return pl.read_csv(file_path)
+    return None

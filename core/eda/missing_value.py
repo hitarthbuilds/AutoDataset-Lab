@@ -1,13 +1,12 @@
 import polars as pl
 
 def missing_summary(df: pl.DataFrame) -> pl.DataFrame:
-    total_rows = df.height
+    total_rows = df.height()
 
-    # null_count() returns a DataFrame. Convert to long format.
-    null_df = df.null_count().transpose(include_header=True, header_name="Column", value_name="Missing")
+    data = {
+        "Column": df.columns,
+        "Missing Count": [df[col].null_count() for col in df.columns],
+        "Missing %": [(df[col].null_count() / total_rows) * 100 for col in df.columns]
+    }
 
-    null_df = null_df.with_columns([
-        (pl.col("Missing") / total_rows * 100).alias("Percent Missing")
-    ])
-
-    return null_df
+    return pl.DataFrame(data)
