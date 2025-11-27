@@ -1,12 +1,21 @@
 import polars as pl
+import matplotlib.pyplot as plt
 
-def compute_correlations(df: pl.DataFrame) -> pl.DataFrame:
-    num_cols = [c for c, dt in zip(df.columns, df.dtypes) if dt in (pl.Int64, pl.Float64)]
+def compute_correlations(df: pl.DataFrame):
+    numeric_df = df.select([
+        col for col, dt in zip(df.columns, df.dtypes)
+        if pl.datatypes.is_numeric_dtype(dt)
+    ])
 
-    if len(num_cols) < 2:
-        return pl.DataFrame({"message": ["Not enough numeric columns for correlation"]})
+    if numeric_df.width < 2:
+        return None, None
 
-    pdf = df.select(num_cols).to_pandas()
-    corr = pdf.corr()
+    corr_df = numeric_df.to_pandas().corr()
 
-    return pl.DataFrame(corr.reset_index())
+    fig, ax = plt.subplots(figsize=(6, 4))
+    cax = ax.matshow(corr_df, cmap="coolwarm")
+    plt.xticks(range(len(corr_df.columns)), corr_df.columns, rotation=90)
+    plt.yticks(range(len(corr_df.columns)), corr_df.columns)
+    fig.colorbar(cax)
+
+    return corr_df, fig

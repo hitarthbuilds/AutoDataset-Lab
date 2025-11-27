@@ -1,47 +1,49 @@
 import streamlit as st
 import polars as pl
-from core.utils.file_handler import load_saved_file
-from core.preprocess.clean import clean_data
-from core.preprocess.encode import encode_features
-from core.preprocess.scale import scale_features
-from core.preprocess.impute import impute_missing
+import pandas as pd
+from core.utils.sessions import get_df, set_df
 
-# Load DataFrame
-if "uploaded_df" not in st.session_state:
-    if "uploaded_path" in st.session_state:
-        df = load_saved_file(st.session_state["uploaded_path"])
-        st.session_state["uploaded_df"] = df
-    else:
-        st.error("No dataset found. Please upload a CSV first.")
-        st.stop()
+def app():
+    st.header("Preprocessing")
 
-df = st.session_state["uploaded_df"]
+    df = get_df()
+    if df is None:
+        st.warning("Upload dataset first.")
+        return
 
-st.title("Preprocessing")
+    pdf = df.to_pandas()
+    st.subheader("Preview (Before Processing)")
+    st.dataframe(pdf.head())
 
-st.subheader("Choose Preprocessing Steps")
+    st.sidebar.header("Options")
+    drop_cols = st.sidebar.checkbox("Drop columns with > 50% missing")
+    impute_method = st.sidebar.selectbox(
+        "Impute numeric values",
+        ["none", "mean", "median"]
+    )
 
-do_clean = st.checkbox("Clean Data (remove duplicates, standardize text)")
-do_impute = st.checkbox("Impute Missing Values")
-do_encode = st.checkbox("Encode Categorical Features")
-do_scale = st.checkbox("Scale Numeric Features")
+    run = st.sidebar.button("Apply")
 
-if st.button("Apply Preprocessing"):
-    final_df = df.clone()
+    if run:
+        temp = pdf.copy()
 
-    if do_clean:
-        final_df = clean_data(final_df)
+        # Drop high-missing columns
+        if drop_cols:
+            thresh = len(temp) * 0.5
+            temp = temp.dropna(thresh=thresh, axis=1)
 
-    if do_impute:
-        final_df = impute_missing(final_df)
+        # Impute
+        if impute_method != "none":
+            num = temp.select_dtypes(include=["number"])
+            if not num.empty:
+                if impute_method == "mean":
+                    temp[num.columns] = num.fillna(num.mean())
+                else:
+                    temp[num.columns] = num.fillna(num.median())
 
-    if do_encode:
-        final_df = encode_features(final_df)
+        # Convert back to Polars
+        new_df = pl.from_pandas(temp)
+        set_df(new_df)
 
-    if do_scale:
-        final_df = scale_features(final_df)
-
-    st.session_state["uploaded_df"] = final_df
-
-    st.success("Preprocessing Applied!")
-    st.dataframe(final_df.head(50))
+        st.success("Preprocessing applied.")
+        st.dataframe(temp.head())

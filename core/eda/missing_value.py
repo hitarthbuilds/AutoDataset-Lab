@@ -1,12 +1,15 @@
 import polars as pl
 
-def missing_summary(df: pl.DataFrame) -> pl.DataFrame:
-    total_rows = df.height()
+def missing_summary(df: pl.DataFrame):
+    total_rows = df.height
+    result = []
 
-    data = {
-        "Column": df.columns,
-        "Missing Count": [df[col].null_count() for col in df.columns],
-        "Missing %": [(df[col].null_count() / total_rows) * 100 for col in df.columns]
-    }
+    for col in df.columns:
+        missing = df[col].null_count()
+        result.append({
+            "Column": col,
+            "Missing": missing,
+            "Missing %": round((missing / total_rows) * 100, 2)
+        })
 
-    return pl.DataFrame(data)
+    return pl.DataFrame(result)
