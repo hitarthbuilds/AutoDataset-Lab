@@ -1,14 +1,22 @@
-import polars as pl
+# core/preprocess/scale.py
+"""
+Scaler factory.
+"""
 
-def scale_features(df: pl.DataFrame) -> pl.DataFrame:
-    num_cols = [c for c, dt in zip(df.columns, df.dtypes) if dt in (pl.Int64, pl.Float64)]
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, FunctionTransformer
+from sklearn.base import TransformerMixin
 
-    if not num_cols:
-        return df
 
-    for col in num_cols:
-        col_min = df[col].min()
-        col_max = df[col].max()
-        df = df.with_columns(((pl.col(col) - col_min) / (col_max - col_min)).alias(col))
-
-    return df
+def get_scaler(name: str = "standard") -> TransformerMixin:
+    """
+    Return a scaler. name: "standard", "minmax", "none"
+    Using FunctionTransformer as no-op for 'none'.
+    """
+    n = (name or "none").lower().strip()
+    if n == "standard":
+        return StandardScaler()
+    if n == "minmax":
+        return MinMaxScaler()
+    if n in {"none", "passthrough", ""}:
+        return FunctionTransformer(lambda x: x)
+    raise ValueError(f"Unknown scaler name: {name}")

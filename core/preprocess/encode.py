@@ -1,8 +1,34 @@
-import polars as pl
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 
-def encode_features(df: pl.DataFrame) -> pl.DataFrame:
-    cat_cols = [c for c, dt in zip(df.columns, df.dtypes) if dt == pl.Utf8]
-    if not cat_cols:
-        return df
 
-    return df.to_dummies(columns=cat_cols)
+def get_onehot_encoder():
+    # For sklearn >= 1.4, "sparse_output" replaces "sparse"
+    return OneHotEncoder(
+        sparse_output=False,
+        handle_unknown="ignore"
+    )
+
+
+def get_ordinal_encoder(categories="auto"):
+    return OrdinalEncoder(
+        handle_unknown="use_encoded_value",
+        unknown_value=-1
+    )
+
+
+def get_encoder(name: str):
+    """
+    Returns the correct encoder instance based on name.
+    """
+    name = name.lower().strip()
+
+    if name == "onehot":
+        return get_onehot_encoder()
+
+    if name == "ordinal":
+        return get_ordinal_encoder()
+
+    if name == "none":
+        return None
+
+    raise ValueError(f"Unknown encoder: {name}")

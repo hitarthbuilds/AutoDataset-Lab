@@ -1,67 +1,114 @@
 import streamlit as st
+import pandas as pd
 import polars as pl
+import traceback
 
 from core.utils.sessions import get_df
-from core.eda.summary import dataset_overview
-from core.eda.missing_value import missing_summary
-from core.eda.correlations import compute_correlations
-from core.eda.visualisation import plot_numeric_distributions
+from core.eda.analyze import analyze_dataframe
+from core.eda.visualize import (
+    plot_numeric_distribution,
+    plot_categorical_distribution,
+    plot_correlation_heatmap
+)
+from core.eda.report import generate_visual_eda_report
 
-st.title("Explore Data")
 
-df = get_df()
+def app():
+    st.header("🔍 Explore Data")
 
-if df is None:
-    st.error("No dataset found. Upload a CSV first.")
-    st.stop()
+    # Load dataset
+    df_polars = get_df()
+    if df_polars is None:
+        st.warning("Upload a dataset first.")
+        return
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Overview",
-    "Missing Values",
-    "Distributions",
-    "Correlations"
-])
-
-# -----------------------------------------------------------------------------
-# TAB 1: OVERVIEW
-# -----------------------------------------------------------------------------
-with tab1:
-    st.subheader("Dataset Overview")
+    df = df_polars.to_pandas()
 
     try:
-        overview = dataset_overview(df)
-        st.write(overview)
-    except Exception as e:
-        st.error(f"Error in dataset_overview(): {e}")
+        # -------------------------------
+        # Preview
+        #-------------------------------
+        st.subheader("📄 Preview")
+        st.dataframe(df.head(), use_container_width=True)
 
-    st.subheader("Preview (First 100 Rows)")
-    st.dataframe(df.head(100))
+        # -------------------------------
+        # Analysis summary
+       # -------------------------------
+        analysis = analyze_dataframe(df)
 
+        with st.expander("📌 Overview"):
+            st.json(analysis["overview"])
 
-# -----------------------------------------------------------------------------
-# TAB 2: MISSING VALUES
-# -----------------------------------------------------------------------------
-with tab2:
-    st.subheader("Missing Value Summary")
+        with st.expander("⚠ Missing Values"):
+            st.json(analysis["missing"])
 
-    try:
-        missing_df = missing_summary(df)
-        st.dataframe(missing_df)
-    except Exception as e:
-        st.error(f"Error in missing_summary(): {e}")
+        with st.expander("📊 Numeric Summary"):
+            st.json(analysis["numeric_summary"])
 
+        with st.expander("🧩 Categorical Summary"):
+            st.json(analysis["categorical_summary"])
 
-# -----------------------------------------------------------------------------
-# TAB 3: NUMERIC DISTRIBUTIONS
-# -----------------------------------------------------------------------------
-with tab3:
-    st.subheader("Numeric Distributions")
+        # -------------------------------
+        # Visualizations
+        # -------------------------------
+        st.subheader("📈 Visualizations")
 
-    try:
-        fig = plot_numeric_distributions(df)
-        if fig:
+        numerics = analysis["column_types"]["numeric"]
+        cats = analysis["column_types"]["categorical"]
+
+        col1, col2 = st.columns(2)
+
+        # NUMERIC VISUALS
+        if numerics:
+            st.markdown("### 🔢 Numeric Distributions")
+            for i, col in enumerate(numerics):
+                target = col1 if i % 2 == 0 else col2
+                with target:
+                    st.markdown(f"**{col}**")
+                    fig = plot_numeric_distribution(df, col)
+                    fig.set_size_inches(4, 3)  # compact
+                    st.pyplot(fig)
+
+        # CATEGORICAL VISUALS
+        if cats:
+            st.markdown("### 🔤 Categorical Distributions")
+            for i, col in enumerate(cats):
+                target = col1 if i % 2 == 0 else col2
+                with target:
+                    st.markdown(f"**{col}**")
+                    fig = plot_categorical_distribution(df, col)
+                    fig.set_size_inches(4, 3)
+                    st.pyplot(fig)
+
+        # CORRELATION MATRIX
+        if len(numerics) > 1:
+            st.markdown("### 🔥 Correlation Heatmap")
+            fig = plot_correlation_heatmap(df[numerics])
+            fig.set_size_inches(6, 4)
             st.pyplot(fig)
-        else:
-            st.info("No numeric columns available.")
+
+        # -------------------------------
+        # DOWNLOAD REPORT
+       # -------------------------------
+        st.markdown("---")
+        st.subheader("📥 Export EDA Report")
+
+        pdf_path = generate_visual_eda_report(df)
+        with open(pdf_path, "rb") as f:
+            st.download_button(
+                label="Download Report",
+                data=f,
+                file_name="eda_report.pdf",
+                mime="application/pdf"
+            )
+
+        st.success("EDA PDF report generated successfully.")
+
     except Exception as e:
-       st.error(f"Error in compute_correlations(): {e}")
+        st.error("Something went wrong inside Explore Data.")
+        st.code(traceback.format_exc())
+
+
+# IMPORTANT
+# This MUST be here or Streamlit won't render the page
+app()
