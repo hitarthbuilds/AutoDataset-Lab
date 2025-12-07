@@ -1,32 +1,25 @@
-# pages/1_Upload_Dataset.py
 import streamlit as st
-import polars as pl
+import pandas as pd
 from core.utils.sessions import set_df
-from core.utils.file_handler import save_uploaded_file
 
-st.title("Upload Dataset")
+def app():
+    st.title("📁 Upload Dataset")
+    st.write("Drag & drop or browse CSV file")
 
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+    uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
-if uploaded_file:
-    # try to save the raw uploaded file
-    try:
-        saved_path = save_uploaded_file(uploaded_file)
-    except Exception as e:
-        st.error(f"Failed to save uploaded file: {e}")
-        saved_path = None
+    if uploaded:
+        try:
+            df = pd.read_csv(uploaded)
+            set_df(df)
 
-    # read into polars
-    try:
-        df = pl.read_csv(uploaded_file)
-        set_df(df)
-        st.success("File uploaded successfully!")
+            st.success("Dataset loaded successfully!")
+            st.write("### Preview")
+            st.dataframe(df.head())
+            st.info(f"Shape: {df.shape}")
 
-        # NOTE: polars DataFrame properties: .height and .width (not funcs)
-        st.info(f"Rows: {df.height} | Columns: {df.width}")
+        except Exception as e:
+            st.error(f"❌ Failed to read CSV: {e}")
 
-        st.subheader("Preview (First 100 Rows)")
-        st.dataframe(df.head(100).to_pandas())
-
-    except Exception as e:
-        st.error(f"Error loading CSV: {e}")
+if __name__ == "__main__":
+    app()

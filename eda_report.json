@@ -1,0 +1,18 @@
+{
+  "dataset": {
+    "name": "dataset.csv",
+    "shape": {
+      "rows": 17772,
+      "cols": 151
+    }
+  },
+  "summaries": {
+    "analysis": {},
+    "missing": {},
+    "anomalies": {},
+    "drift": {},
+    "preprocessing": {}
+  },
+  "figures": [],
+  "metadata": {}
+}
