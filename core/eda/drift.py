@@ -21,7 +21,8 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, List
 from scipy.stats import ks_2samp, entropy
-from scipy.spatial.distance import wasserstein_distance
+from scipy.stats import wasserstein_distance
+
 
 
 # -----------------------------

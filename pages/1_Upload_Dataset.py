@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
-from core.utils.sessions import set_df
+from core.utils.sessions import set_df, clear_eda_results
 
 def app():
     st.title("📁 Upload Dataset")
-    st.write("Drag & drop or browse CSV file")
+    st.write("Upload CSV file to start your project.")
 
     uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
@@ -12,9 +12,9 @@ def app():
         try:
             df = pd.read_csv(uploaded)
             set_df(df)
+            clear_eda_results()   # IMPORTANT FIX
 
             st.success("Dataset loaded successfully!")
-            st.write("### Preview")
             st.dataframe(df.head())
             st.info(f"Shape: {df.shape}")
 
