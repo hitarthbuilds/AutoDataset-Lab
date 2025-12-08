@@ -6,6 +6,7 @@ import os
 import io
 import time
 import inspect
+import math
 from typing import Any, Dict, List, Tuple, Optional
 
 # ---------------------------
@@ -76,10 +77,6 @@ for k, v in _default_session.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ---------------------------
-# Config
-# ---------------------------
-DEBUG = False  # flip to True during development if you want console prints
 
 # ---------------------------
 # Small helpers
@@ -92,25 +89,10 @@ def _safe_list(v: Any) -> List:
     return v if isinstance(v, list) else []
 
 
-def _call_export_report_flexible(
-    title: str,
-    analysis: Dict[str, Any],
-    missing: Dict[str, Any],
-    quality: Dict[str, Any],
-    anomalies: Dict[str, Any],
-    drift: Dict[str, Any],
-    schema: Dict[str, Any],
-    feature_importance: Dict[str, Any],
-    visuals: Optional[Dict[str, Any]] = None,
-    generate_pdf: bool = True,
-    per_column_limit: int = 6,
-) -> Dict[str, Any]:
+def _try_call_export_report(*args, **kwargs):
     """
-    Call export_audit_report in a robust way to handle multiple signatures:
-    - old: export_audit_report(output_path, output_title, analysis, quality, missing, anomalies, drift, schema, feature_importance, visuals=..., generate_pdf=...)
-    - new: export_audit_report(analysis, missing, quality, anomalies, drift, schema, feature_importance, visuals=..., generate_pdf=...)
-    - fallback: try keyword-args
-    Returns a dict with results or {'error': ...}
+    Try to call export_audit_report with dynamic arg sets so we handle different signatures
+    across environments. Return dict result or {"error": str(e)}.
     """
     if not export_audit_report:
         return {"error": "export_audit_report not available in this environment."}
@@ -121,231 +103,157 @@ def _call_export_report_flexible(
     except Exception:
         params = []
 
-    # Build common kwargs we can try
-    safe_kwargs = {
-        "output_title": title,
-        "analysis": analysis,
-        "quality": quality,
-        "missing": missing,
-        "anomalies": anomalies,
-        "drift": drift,
-        "schema": schema,
-        "feature_importance": feature_importance,
-        "visuals": visuals,
-        "generate_pdf": generate_pdf,
-        "per_column_limit": per_column_limit,
-    }
+    # build candidate arg orders (attempts)
+    candidates = [
+        ("output_path", "output_title", "analysis", "quality", "missing", "anomalies", "drift", "schema", "feature_importance", "visuals", "generate_pdf"),
+        ("analysis", "missing", "quality", "anomalies", "drift", "schema", "feature_importance", "visuals"),
+        ("analysis", "missing", "quality", "anomalies", "drift", "schema", "feature_importance"),
+        ("analysis", "missing", "quality", "anomalies", "drift"),
+        ("analysis", "missing"),
+    ]
 
-    # If signature expects output_path first, create a temp path
-    try_orders = []
-
-    # 1) signature accepts 'output_path' -> call with output file path + named args if allowed
-    if "output_path" in params:
-        # create a temporary base path
-        tmp = tempfile.NamedTemporaryFile(prefix="audit_", suffix=".html", delete=False)
-        tmp.close()
-        output_path = tmp.name  # e.g. /tmp/audit_xxx.html
-        # many versions expect output_path (without extension handling), but our report.py handles extension
-        try_orders.append(("with_output_path", output_path))
-
-    # 2) signature may expect positional (analysis, missing, quality, anomalies, drift, schema, feature_importance)
-    # We'll attempt calling with positional groups if that matches param length
-    try_orders.append(("positional_best", None))
-    try_orders.append(("kwargs", None))
-
-    last_exc = None
-    for mode, path in try_orders:
-        try:
-            if mode == "with_output_path":
-                # call with output_path followed by some positional or keyword args depending on params
-                # try to match param order: after output_path, if next param is 'output_title' pass it
-                call_args = [path]
-                if "output_title" in params:
-                    call_args.append(title)
-                # Now try to append analysis/.. in conventional order if params include them
-                # we'll use keyword args for the rest for safety
-                kw = {}
-                for name in ("analysis", "missing", "quality", "anomalies", "drift", "schema", "feature_importance", "visuals", "generate_pdf", "per_column_limit"):
-                    if name in params:
-                        kw[name] = safe_kwargs.get(name)
-                res = export_audit_report(*call_args, **kw)
-                return res if isinstance(res, dict) else {"result": res}
-            elif mode == "positional_best":
-                # attempt to call with common positional order (older versions)
-                pos = [analysis, missing, quality, anomalies, drift, schema, feature_importance]
-                # trim to signature length
-                sig_len = len(params)
-                # if function doesn't take any params, skip
-                if sig_len == 0:
-                    continue
-                cand = pos[:sig_len]
-                try:
-                    res = export_audit_report(*cand)
-                    return res if isinstance(res, dict) else {"result": res}
-                except TypeError:
-                    # try a shorter subset
-                    for L in range(sig_len, 0, -1):
-                        try:
-                            res = export_audit_report(*pos[:L])
-                            return res if isinstance(res, dict) else {"result": res}
-                        except TypeError:
-                            continue
-                    raise
+    # try sensible defaults: create temp base path
+    tmp_base = os.path.join(tempfile.gettempdir(), f"audit_report_{int(time.time())}")
+    # if function expects full signature, try to pass realistic values
+    for cand in candidates:
+        try_args = []
+        for name in cand:
+            if name == "analysis":
+                try_args.append(st.session_state.get("analysis", {}))
+            elif name == "missing":
+                try_args.append(st.session_state.get("missing", {}))
+            elif name == "quality":
+                try_args.append(st.session_state.get("quality", {}))
+            elif name == "anomalies":
+                try_args.append(st.session_state.get("anomalies", {}))
+            elif name == "drift":
+                try_args.append(st.session_state.get("drift", {}))
+            elif name == "schema":
+                try_args.append(st.session_state.get("schema", {}))
+            elif name == "feature_importance":
+                try_args.append(st.session_state.get("feature_importance", {}))
+            elif name == "visuals":
+                try_args.append(st.session_state.get("visuals", {}))
+            elif name == "output_path":
+                try_args.append(tmp_base)
+            elif name == "output_title":
+                try_args.append("Audit Report - AutoDataset-Lab")
+            elif name == "generate_pdf":
+                try_args.append(True)
             else:
-                # call by keyword args
-                # filter kwargs to those supported by the signature when possible
-                if params:
-                    kw = {k: v for k, v in safe_kwargs.items() if k in params}
-                    res = export_audit_report(**kw)
-                else:
-                    # unknown signature - try calling with a useful positional fallback
-                    res = export_audit_report(analysis, missing, quality, anomalies, drift, schema, feature_importance)
-                return res if isinstance(res, dict) else {"result": res}
-        except TypeError as e:
-            last_exc = e
-            continue
-        except Exception as e:
-            return {"error": str(e)}
-    return {"error": f"export_audit_report failed to match any known signature. Last error: {last_exc}"}
+                # fallback empty
+                try_args.append(None)
+        res = export_audit_report(*try_args)
+        return res if isinstance(res, dict) else {"result": res}
+    # last resort
+    try:
+        res = export_audit_report()
+        return res if isinstance(res, dict) else {"result": res}
+    except Exception as e:
+        return {"error": f"export_audit_report failed: {e}"}
 
 
 # ---------------------------
-# Format helpers (human readable conversions)
+# Formatting / humanization helpers
 # ---------------------------
-def _missing_to_human(missing: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[List[str], pd.DataFrame]:
+def _missing_to_human(missing: Dict[str, Any]) -> Tuple[List[str], pd.DataFrame]:
+    """
+    Convert missingness structure into a list of human sentences and a DataFrame summary.
+    Handles multiple shapes defensively so missing keys never crash.
+    """
     out = []
     missing = _safe_dict(missing)
-    per_col = _safe_dict(missing.get("per_column", {}))
 
-    # Backwards compat: some modules return 'columns' or 'perColumn'
-    if not per_col and isinstance(missing.get("columns"), dict):
-        per_col = _safe_dict(missing.get("columns"))
-
-    if not per_col:
-        out.append("No missingness data available.")
-        return out, pd.DataFrame(columns=["column", "missing", "missing_percent"])
+    # Try all common shapes used by your modules
+    per_col = (
+        _safe_dict(missing.get("per_column"))
+        or _safe_dict(missing.get("columns"))
+        or _safe_dict(missing.get("perColumn"))
+        or {}
+    )
 
     rows = []
-    total_missing = 0
+
+    # Build rows safely
     for col, info in per_col.items():
+        missing_count = 0
+        missing_pct = 0.0
+
         if isinstance(info, dict):
-            missing_count = info.get("missing") if info.get("missing") is not None else info.get("missing_count", 0)
-            missing_pct = info.get("missing_percent", info.get("missing_pct", 0))
-        else:
-            missing_count = int(info) if isinstance(info, (int, float)) else 0
-            missing_pct = 0
-        total_missing += missing_count
-        rows.append({"column": col, "missing": missing_count, "missing_percent": round(float(missing_pct), 2)})
+            # try all possible key names
+            missing_count = info.get("missing")
+            if missing_count is None:
+                missing_count = info.get("missing_count", info.get("count", 0))
 
-    df_missing = pd.DataFrame(rows).sort_values("missing", ascending=False)
+            missing_pct = info.get("missing_percent")
+            if missing_pct is None:
+                missing_pct = info.get("missing_pct", info.get("pct", 0))
 
-    if df_missing["missing"].sum() == 0:
+        elif isinstance(info, (int, float)):
+            # scalar means count only
+            missing_count = int(info)
+            missing_pct = 0.0
+
+        rows.append({
+            "column": col,
+            "missing": int(missing_count or 0),
+            "missing_percent": float(round(missing_pct or 0, 2)),
+        })
+
+    # Always produce a DataFrame with correct columns
+    df = pd.DataFrame(rows, columns=["column", "missing", "missing_percent"])
+
+    # If no rows or zero-missing everywhere
+    if df.empty or df["missing"].sum() == 0:
         out.append("No missing values detected.")
-        return out, df_missing
+        return out, df
 
-    out.append(f"Total missing values across dataset: {int(df_missing['missing'].sum())}.")
-    top5 = df_missing.head(5)
+    # Safe sort (column now always exists)
+    df = df.sort_values("missing", ascending=False)
+
+    out.append(f"Total missing values across dataset: {int(df['missing'].sum())}.")
     out.append("Top columns by missingness:")
-    for _, r in top5.iterrows():
-        out.append(f"- `{r['column']}` : {int(r['missing'])} missing ({r['missing_percent']}%)")
 
-    return out, df_missing
+    for _, r in df.head(5).iterrows():
+        out.append(f"- `{r['column']}` → {int(r['missing'])} missing ({r['missing_percent']}%)")
+
+    return out, df
 
 
 def _quality_to_human(quality: Dict[str, Any]) -> Tuple[List[str], pd.DataFrame]:
     out = []
     quality = _safe_dict(quality)
     if not quality:
-        out.append("No quality issues detected or quality analyzer not available.")
+        out.append("No quality issues detected or quality analyzer unavailable.")
         return out, pd.DataFrame()
 
-    dup = quality.get("duplicate_summary", {}) or {}
-    if dup:
-        dup_count = dup.get("duplicate_count", dup.get("duplicate_rows", 0))
-        out.append(f"Duplicate rows: {dup_count}.")
-        sample = dup.get("duplicate_index_sample", []) or dup.get("duplicate_index", [])
-        if sample:
-            out.append(f"- Example duplicate row indices: {sample[:5]}")
+    # try a number of common keys
+    dup = quality.get("duplicate_summary") or quality.get("duplicates") or {}
+    dup_count = dup.get("duplicate_count") or dup.get("duplicate_rows") or dup.get("duplicates", 0)
+    if dup_count:
+        out.append(f"Duplicate rows: {int(dup_count)}.")
 
-    const_list = quality.get("constant_summary", {}).get("constant_columns", []) or []
-    if const_list:
-        out.append(f"Constant (near-constant) columns detected: {len(const_list)}.")
-        for item in const_list[:5]:
-            col = item.get("column", str(item))
+    const = quality.get("constant_summary", {}) or {}
+    const_cols = const.get("constant_columns") or const.get("constants") or []
+    if const_cols:
+        out.append(f"Constant columns detected: {len(const_cols)}.")
+        for item in const_cols[:5]:
+            col = item.get("column") if isinstance(item, dict) else str(item)
             out.append(f"- `{col}`")
 
-    warnings = quality.get("warnings", []) or []
-    if isinstance(warnings, list) and warnings:
+    stats_warn = quality.get("warnings") or quality.get("quality_warnings") or []
+    if stats_warn:
         out.append("Quality warnings:")
-        for w in warnings[:8]:
+        for w in stats_warn[:8]:
             out.append(f"- {w}")
 
-    rows = []
-    rows.append({"metric": "duplicate_count", "value": dup.get("duplicate_count", dup.get("duplicate_rows", 0))})
-    rows.append({"metric": "constant_columns_count", "value": len(const_list)})
+    # build a small table
+    rows = [
+        {"metric": "duplicate_rows", "value": int(dup_count or 0)},
+        {"metric": "constant_cols", "value": len(const_cols)},
+    ]
     dfq = pd.DataFrame(rows)
-
     return out, dfq
-
-
-def _format_feature_importance(fi: Dict[str, Any]) -> Tuple[List[str], pd.DataFrame]:
-    fi = _safe_dict(fi)
-    human = []
-    df = pd.DataFrame()
-
-    top_features = fi.get("top_features")
-    if isinstance(top_features, list) and top_features:
-        human.append("Top predictive features:")
-        rows = []
-        for item in top_features:
-            if isinstance(item, dict):
-                col = item.get("column") or item.get("name") or str(item)
-                imp = item.get("importance", 0)
-            else:
-                col = str(item)
-                imp = 0
-            rows.append({"column": col, "importance": float(imp)})
-            human.append(f"- `{col}` → importance {imp:.6f}")
-        df = pd.DataFrame(rows).sort_values("importance", ascending=False)
-        return human, df
-
-    methods = fi.get("methods", fi.get("method", {}))
-    if isinstance(methods, dict) and methods:
-        human.append("Feature importance methods detected:")
-        rows = []
-        for method_name, detail in methods.items():
-            human.append(f"- Method: `{method_name}`")
-            imps = _safe_dict(detail.get("importances", {}))
-            if not imps and isinstance(detail.get("importance"), dict):
-                imps = _safe_dict(detail.get("importance", {}))
-            # flatten fallback
-            if not imps:
-                for k, v in detail.items():
-                    if isinstance(v, dict) and all(isinstance(x, (int, float)) for x in v.values()):
-                        imps.update(v)
-            for c, imp in imps.items():
-                try:
-                    rows.append({"method": method_name, "column": c, "importance": float(imp)})
-                except Exception:
-                    rows.append({"method": method_name, "column": c, "importance": 0.0})
-        if rows:
-            df = pd.DataFrame(rows).sort_values("importance", ascending=False)
-            topn = df.groupby("column")["importance"].mean().sort_values(ascending=False).head(10)
-            human.append("Aggregate top features across methods:")
-            for col, val in topn.items():
-                human.append(f"- `{col}` → {val:.6f}")
-            return human, df
-
-    if fi and all(isinstance(v, (int, float)) for v in fi.values()):
-        rows = [{"column": k, "importance": float(v)} for k, v in fi.items()]
-        df = pd.DataFrame(rows).sort_values("importance", ascending=False)
-        human.append("Feature importances:")
-        for _, r in df.head(10).iterrows():
-            human.append(f"- `{r['column']}` → {r['importance']:.6f}")
-        return human, df
-
-    human.append("No feature importance data available.")
-    return human, df
 
 
 def _anomalies_to_human(anom: Dict[str, Any]) -> List[str]:
@@ -353,90 +261,213 @@ def _anomalies_to_human(anom: Dict[str, Any]) -> List[str]:
     anom = _safe_dict(anom)
     methods = _safe_dict(anom.get("methods", {}))
     if not methods:
-        out.append("No anomalies detected or anomaly module missing.")
+        out.append("No anomalies detected or anomaly module unavailable.")
         return out
-    out.append("Anomaly detection methods ran:")
-    for m in methods.keys():
-        out.append(f"- {m}")
-    for method_name, detail in methods.items():
+    out.append("Anomaly detection summary:")
+    for m, detail in methods.items():
         per = _safe_dict(detail.get("per_column", {}))
         if per:
-            counts = {}
-            for c, d in per.items():
-                if isinstance(d, dict):
-                    counts[c] = int(d.get("count", d.get("anomaly_count", 0)))
-                elif isinstance(d, (int, float)):
-                    counts[c] = int(d)
-                else:
-                    counts[c] = 0
-            total = sum(counts.values())
-            out.append(f"  - Method `{method_name}` flagged {total} anomalies across columns.")
+            try:
+                total = sum(int(v if isinstance(v, (int, float)) else v.get("count", 0)) for v in per.values())
+            except Exception:
+                total = 0
+            out.append(f"- `{m}` flagged approximately {total} anomalies across columns.")
+        else:
+            out.append(f"- `{m}` ran but no per-column counts available.")
     return out
 
 
 def _drift_to_human(drift: Dict[str, Any]) -> List[str]:
+    out = []
     drift = _safe_dict(drift)
     if not drift:
-        return ["No dataset drift detected or drift module missing."]
-    out = []
-    by_col = drift.get("per_column") or drift.get("drift_by_column") or drift.get("columns") or {}
-    if isinstance(by_col, dict) and by_col:
-        flagged = [c for c, v in by_col.items() if (isinstance(v, dict) and (v.get("drift_detected") or v.get("drift"))) or (v is True)]
-        out.append(f"Columns suspected of distributional drift: {len(flagged)}")
-        for c in flagged[:10]:
-            out.append(f"- `{c}`")
-    else:
-        out.append("Drift info available.")
+        out.append("No dataset drift detected or drift module unavailable.")
+        return out
+    by_col = _safe_dict(drift.get("per_column", {}) or drift.get("drift_by_column", {}) or drift.get("columns", {}))
+    flagged = []
+    for c, info in by_col.items():
+        try:
+            if isinstance(info, dict) and (info.get("drift_detected") or info.get("drift", False) or info.get("p_value", 0) < 0.05):
+                flagged.append(c)
+        except Exception:
+            continue
+    out.append(f"Columns suspected of distributional drift: {len(flagged)}.")
+    for c in flagged[:10]:
+        out.append(f"- `{c}`")
     return out
 
 
-def _generate_actionable_recommendations(analysis, missing, anomalies, drift, quality, fi) -> List[str]:
-    out = []
-    missing_lines, df_missing = _missing_to_human(missing, analysis)
-    if df_missing is None or df_missing.empty or df_missing["missing"].sum() == 0:
-        out.append("No missing values — no imputation needed.")
-    else:
-        high = df_missing[df_missing["missing_percent"] > 20]
-        if not high.empty:
-            out.append("High-missingness columns (>20%): consider dropping or imputing:")
-            for _, r in high.iterrows():
-                out.append(f"- `{r['column']}` ({r['missing_percent']}% missing)")
-        else:
-            out.append("Missing values present but generally low per column — consider imputation strategies.")
+# ---------------------------
+# Feature importance aggregation (Mode 2: average normalized method scores)
+# ---------------------------
+def _collect_method_scores(fi: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
+    """
+    Given compute_feature_importance_all output, extract per-method feature->score dicts.
+    Return dict: { method_name: {feature: score, ...}, ... }
+    Defensive: handles many shapes.
+    """
+    res = {}
+    fi = _safe_dict(fi)
+    methods = fi.get("methods") or {}
+    # If top-level flattened scores exist, capture them
+    # e.g., fi.get("scores") or fi.get("importances")
+    top_level_candidates = ("importances", "importances_mean", "scores", "shap_mean_abs")
+    for cand in top_level_candidates:
+        if cand in fi and isinstance(fi[cand], dict):
+            res[f"top_{cand}"] = {k: float(v) for k, v in fi[cand].items()}
 
-    q_lines, qdf = _quality_to_human(quality)
-    if qdf is not None and not qdf.empty:
-        dup_count = int(qdf.loc[qdf["metric"] == "duplicate_count", "value"].sum()) if "duplicate_count" in qdf["metric"].values else 0
-        if dup_count > 0:
-            out.append(f"Found {dup_count} duplicate rows — consider deduplication.")
+    if isinstance(methods, dict):
+        for m, detail in methods.items():
+            detail = _safe_dict(detail)
+            # check many keys
+            for key in ("importances", "importances_mean", "scores", "shap_mean_abs"):
+                dd = detail.get(key)
+                if isinstance(dd, dict):
+                    # convert numeric-like to floats
+                    try:
+                        res[f"{m}.{key}"] = {k: float(v) for k, v in dd.items()}
+                        break
+                    except Exception:
+                        # fallback: try pandas-friendly conversion
+                        res[f"{m}.{key}"] = {k: float(dd.get(k) or 0.0) for k in dd.keys()}
+                        break
+            # some methods might store as list of dicts [{feature, score}, ...]
+            if not any(k.startswith(f"{m}.") for k in res.keys()):
+                # try list shapes
+                for possible in ("ranked", "top_features", "scores_list", "features"):
+                    lst = detail.get(possible)
+                    if isinstance(lst, list):
+                        mapping = {}
+                        for item in lst:
+                            if isinstance(item, dict):
+                                keyf = item.get("feature") or item.get("column") or item.get("name")
+                                val = item.get("score") or item.get("importance") or item.get("value")
+                                if keyf is not None:
+                                    try:
+                                        mapping[str(keyf)] = float(val or 0.0)
+                                    except Exception:
+                                        mapping[str(keyf)] = 0.0
+                        if mapping:
+                            res[f"{m}.{possible}"] = mapping
+                            break
+    return res
 
-    anom_lines = _anomalies_to_human(anomalies)
-    if any("flagged" in l or "flagged" in " ".join(anom_lines) for l in anom_lines):
-        out.append("Anomalies detected — inspect top anomalous rows and consider capping/outlier handling.")
 
-    fi_lines, fi_df = _format_feature_importance(fi)
-    if fi_df is not None and not fi_df.empty:
-        top = list(fi_df["column"].unique()[:5])
-        out.append(f"Top predictive features to inspect for leakage/correlation: {', '.join([f'`{c}`' for c in top])}")
+def _normalize_series_dict(d: Dict[str, float]) -> Dict[str, float]:
+    """
+    Min-max normalize a dict of numeric values to 0..1 (higher is better).
+    If all values equal, map top to 1.0 and others to 0.
+    """
+    if not d:
+        return {}
+    try:
+        s = pd.Series(d).astype(float)
+    except Exception:
+        # fallback to manual
+        out = {}
+        for k, v in d.items():
+            try:
+                out[k] = float(v)
+            except Exception:
+                out[k] = 0.0
+        s = pd.Series(out)
+    mn = s.min()
+    mx = s.max()
+    if math.isclose(mx, mn):
+        # all same -> top gets 1.0, rest 0 (or all 0 if zero)
+        if mx == 0:
+            return {k: 0.0 for k in s.index}
+        out = {}
+        top = s.idxmax()
+        for k in s.index:
+            out[k] = 1.0 if k == top else 0.0
+        return out
+    norm = (s - mn) / (mx - mn)
+    return norm.to_dict()
 
-    drift_lines = _drift_to_human(drift)
-    if any("drift" in s.lower() for s in drift_lines):
-        out.append("Distribution drift detected — validate data collection and consider retraining.")
 
-    if not out:
-        out.append("No specific recommendations could be generated.")
+def _aggregate_normalized_methods(method_score_maps: Dict[str, Dict[str, float]]) -> Dict[str, float]:
+    """
+    For each method map, normalize then average across methods.
+    Returns aggregated_score: {feature: score}
+    """
+    if not method_score_maps:
+        return {}
+    normalized_maps = []
+    for mname, fmap in method_score_maps.items():
+        # cramers_v might be matrix; skip non-1d
+        if not isinstance(fmap, dict):
+            continue
+        normalized = _normalize_series_dict(fmap)
+        normalized_maps.append(normalized)
 
-    return out
+    # collect union of features
+    all_feats = set()
+    for nm in normalized_maps:
+        all_feats.update(nm.keys())
+    if not all_feats:
+        return {}
+
+    # build dataframe: rows=feature, cols=method -> fill 0 for missing
+    dfm = pd.DataFrame(index=sorted(all_feats))
+    for i, nm in enumerate(normalized_maps):
+        dfm[f"m{i}"] = pd.Series(nm)
+    dfm = dfm.fillna(0.0)
+    # average across columns
+    dfm["mean_score"] = dfm.mean(axis=1)
+    # convert to dict
+    return dfm["mean_score"].to_dict()
+
+
+def _compute_aggregated_feature_importance(fi_raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Produce canonical aggregated feature_importance dict that downstream UI expects.
+    Structure:
+    {
+      "methods": {...},            # original raw methods (kept)
+      "aggregated_scores": {feat: score (0..1)},
+      "top_features": [{"column": feat, "importance": score}, ...],
+      "meta": {...}
+    }
+    """
+    out = {"methods": {}, "aggregated_scores": {}, "top_features": [], "meta": {}}
+    if not fi_raw:
+        return out
+    try:
+        # keep raw
+        out["methods"] = fi_raw.get("methods", {})
+        # collect per-method maps
+        method_maps = _collect_method_scores(fi_raw)
+        if not method_maps:
+            # fallback: if fi_raw is itself mapping col->score
+            if isinstance(fi_raw, dict) and all(isinstance(v, (int, float)) for v in fi_raw.values()):
+                ag = _normalize_series_dict({k: float(v) for k, v in fi_raw.items()})
+                out["aggregated_scores"] = ag
+                out["top_features"] = [{"column": k, "importance": float(v)} for k, v in sorted(ag.items(), key=lambda x: x[1], reverse=True)]
+                return out
+            return out
+
+        aggregated = _aggregate_normalized_methods(method_maps)
+        # final normalization (min-max again to 0..1)
+        aggregated = _normalize_series_dict(aggregated)
+        out["aggregated_scores"] = aggregated
+        # top features
+        ordered = sorted(aggregated.items(), key=lambda x: x[1], reverse=True)
+        out["top_features"] = [{"column": k, "importance": float(v)} for k, v in ordered]
+        return out
+    except Exception as e:
+        out["meta"]["error"] = str(e)
+        return out
 
 
 # ---------------------------
 # Main UI
 # ---------------------------
 st.set_page_config(layout="wide")
-st.title("🔍 Explore Data — AutoDataset-Lab")
+st.title("🔍 Explore Data — AutoDataset-Lab  (Mode 2 FI aggregation)")
 
-df = st.session_state["df"]
-reference_df = st.session_state["reference_df"]
+df = st.session_state.get("df")
+reference_df = st.session_state.get("reference_df")
 
 if df is None or not isinstance(df, pd.DataFrame):
     st.warning("Upload a dataset first (go to Upload Dataset).")
@@ -450,56 +481,43 @@ ref_file = st.sidebar.file_uploader("Reference CSV (optional, for drift)", type=
 if ref_file:
     try:
         st.session_state["reference_df"] = pd.read_csv(ref_file)
+        reference_df = st.session_state["reference_df"]
     except Exception:
         st.sidebar.error("Failed to load reference dataset.")
 generate_report_flag = st.sidebar.checkbox("Enable HTML/PDF report generation", value=True)
 
-# Run button
 if st.sidebar.button("Run EDA"):
-    # reset session subkeys
-    for k in ["analysis", "missing", "quality", "anomalies", "drift", "schema", "feature_importance", "visuals", "recommendations", "last_report_paths"]:
-        st.session_state[k] = {}
-    st.session_state["eda_done"] = False
+    # reset
+    for k in ["eda_done", "analysis", "missing", "quality", "anomalies", "drift", "schema", "feature_importance", "visuals", "recommendations", "last_report_paths"]:
+        st.session_state[k] = {} if k != "eda_done" else False
 
     with st.spinner("Running EDA pipeline (defensive mode)… this may take a while on large datasets"):
+        # sample
         sample_n = min(int(max_rows), len(df))
         df_sample = df.sample(n=sample_n, random_state=42) if sample_n < len(df) else df.copy()
-
-        # DEBUG prints only when DEBUG True
-        if DEBUG:
-            try:
-                if summarize_missingness:
-                    print("DEBUG - MISSINGNESS:", summarize_missingness(df_sample))
-                if compute_data_quality_report:
-                    print("DEBUG - QUALITY:", compute_data_quality_report(df_sample))
-                if detect_anomalies:
-                    print("DEBUG - ANOMALIES:", detect_anomalies(df_sample))
-                if detect_dataset_drift and isinstance(st.session_state.get("reference_df"), pd.DataFrame):
-                    print("DEBUG - DRIFT:", detect_dataset_drift(df_sample, st.session_state.get("reference_df")))
-                if compute_feature_importance_all:
-                    print("DEBUG - FEATURE IMPORTANCE:", compute_feature_importance_all(df_sample, target_col if target_col else None))
-            except Exception:
-                pass
 
         # 1) Analysis
         if analyze_df:
             try:
-                analysis = analyze_df(df_sample) or {}
-                st.session_state["analysis"] = analysis
-                # build schema defensively
-                schema = {}
-                cols_over = analysis.get("columns_overview", {}) or {}
-                for c in df_sample.columns:
-                    colinfo = cols_over.get(c, {})
-                    dtype = colinfo.get("dtype") if isinstance(colinfo, dict) else str(df_sample[c].dtype)
-                    inferred = None
-                    if isinstance(colinfo, dict):
-                        inferred = colinfo.get("semantic", {}).get("inferred_type") if isinstance(colinfo.get("semantic", {}), dict) else colinfo.get("inferred_type")
-                    schema[c] = {"dtype": dtype, "inferred_type": inferred}
-                st.session_state["schema"] = schema
+                analysis = analyze_df(df_sample)
+                st.session_state["analysis"] = analysis or {}
+                # build a lightweight schema for UI
+                try:
+                    cols_over = analysis.get("columns_overview", {}) or {}
+                    schema = {}
+                    for c in df_sample.columns:
+                        colinfo = cols_over.get(c) or {}
+                        dtype = colinfo.get("dtype") if isinstance(colinfo, dict) else str(df_sample[c].dtype)
+                        inferred = None
+                        sem = colinfo.get("semantic") if isinstance(colinfo, dict) else None
+                        if isinstance(sem, dict):
+                            inferred = sem.get("inferred_type")
+                        schema[c] = {"dtype": dtype, "inferred_type": inferred}
+                    st.session_state["schema"] = schema
+                except Exception:
+                    st.session_state["schema"] = {}
             except Exception:
-                st.session_state["analysis"] = {"rows": len(df_sample), "columns": len(df_sample.columns), "columns_overview": {}}
-                st.session_state["schema"] = {c: {"dtype": str(df_sample[c].dtype), "inferred_type": None} for c in df_sample.columns}
+                st.session_state["analysis"] = {}
         else:
             st.session_state["analysis"] = {"rows": len(df_sample), "columns": len(df_sample.columns), "columns_overview": {}}
             st.session_state["schema"] = {c: {"dtype": str(df_sample[c].dtype), "inferred_type": None} for c in df_sample.columns}
@@ -511,10 +529,11 @@ if st.sidebar.button("Run EDA"):
             except Exception:
                 st.session_state["missing"] = {}
         else:
+            # fallback summary
             per = {}
             for c in df_sample.columns:
                 miss = int(df_sample[c].isna().sum())
-                pct = round(100 * miss / len(df_sample), 2) if len(df_sample) else 0
+                pct = round(100 * miss / len(df_sample), 2) if len(df_sample) else 0.0
                 per[c] = {"missing": miss, "missing_percent": pct}
             st.session_state["missing"] = {"per_column": per}
 
@@ -537,27 +556,32 @@ if st.sidebar.button("Run EDA"):
             st.session_state["anomalies"] = {}
 
         # 5) Drift
-        if detect_dataset_drift and isinstance(st.session_state.get("reference_df"), pd.DataFrame):
+        if detect_dataset_drift and isinstance(reference_df, pd.DataFrame):
             try:
-                st.session_state["drift"] = detect_dataset_drift(df_sample, st.session_state["reference_df"]) or {}
+                st.session_state["drift"] = detect_dataset_drift(df_sample, reference_df) or {}
             except Exception:
                 st.session_state["drift"] = {}
         else:
             st.session_state["drift"] = {}
 
-        # 6) Feature importance
+        # 6) Feature importance (compute and then aggregate Mode 2)
+        fi_raw = {}
         if compute_feature_importance_all:
             try:
-                st.session_state["feature_importance"] = compute_feature_importance_all(df_sample, target_col if target_col else None) or {}
+                fi_raw = compute_feature_importance_all(df_sample, target_col if target_col else None) or {}
             except Exception:
-                st.session_state["feature_importance"] = {}
+                fi_raw = {}
         else:
-            st.session_state["feature_importance"] = {}
+            fi_raw = {}
+        fi_agg = _compute_aggregated_feature_importance(fi_raw)
+        # store both raw + aggregated for UI/reporting
+        st.session_state["feature_importance"] = {"raw": fi_raw, "aggregated": fi_agg}
 
-        # 7) Visuals
+        # 7) Visuals (do not modify visualize internals; just handle returns safely)
         if generate_visual_bundle:
             try:
                 visuals = generate_visual_bundle(df_sample, st.session_state.get("missing", {}), st.session_state.get("quality", {}), st.session_state.get("anomalies", {}), st.session_state.get("drift", {}), st.session_state.get("feature_importance", {}))
+                # normalize shapes
                 if isinstance(visuals, dict):
                     st.session_state["visuals"] = visuals
                 elif isinstance(visuals, list):
@@ -570,39 +594,49 @@ if st.sidebar.button("Run EDA"):
                         vdict[str(title)] = fig
                     st.session_state["visuals"] = vdict
                 else:
-                    st.session_state["visuals"] = {}
+                    # single figure object
+                    st.session_state["visuals"] = {"visual_0": visuals}
             except Exception as e:
                 st.session_state["visuals"] = {"__error__": f"generate_visual_bundle failed: {e}"}
         else:
             st.session_state["visuals"] = {}
 
-        # 8) Recommendations
-        st.session_state["recommendations"] = _generate_actionable_recommendations(
-            st.session_state.get("analysis", {}),
-            st.session_state.get("missing", {}),
-            st.session_state.get("anomalies", {}),
-            st.session_state.get("drift", {}),
-            st.session_state.get("quality", {}),
-            st.session_state.get("feature_importance", {}),
-        )
+        # 8) Human recommendations (actionable)
+        # reuse helper that focuses on actionable items
+        try:
+            recs = []
+            # missing
+            miss_lines, miss_df = _missing_to_human(st.session_state.get("missing", {}))
+            recs.extend(miss_lines[:5])
+            # quality
+            q_lines, qdf = _quality_to_human(st.session_state.get("quality", {}))
+            recs.extend(q_lines[:5])
+            # anomalies
+            recs.extend(_anomalies_to_human(st.session_state.get("anomalies", {}))[:5])
+            # drift
+            recs.extend(_drift_to_human(st.session_state.get("drift", {}))[:5])
+            # feature importance quick note
+            topf = fi_agg.get("top_features", [])[:5]
+            if topf:
+                recs.append("Top predictive features (aggregated): " + ", ".join([f"`{t['column']}`" for t in topf]))
+            if not recs:
+                recs = ["No specific recommendations generated."]
+            st.session_state["recommendations"] = recs
+        except Exception:
+            st.session_state["recommendations"] = ["Failed to synthesize recommendations."]
 
-        # 9) Report generation (best-effort, flexible calling)
+        # 9) Report generation (best-effort)
         if generate_report_flag:
-            try:
-                paths = _call_export_report_flexible(
-                    title=f"Audit report - {time.strftime('%Y-%m-%d %H:%M')}",
-                    analysis=st.session_state.get("analysis", {}),
-                    missing=st.session_state.get("missing", {}),
-                    quality=st.session_state.get("quality", {}),
-                    anomalies=st.session_state.get("anomalies", {}),
-                    drift=st.session_state.get("drift", {}),
-                    schema=st.session_state.get("schema", {}),
-                    feature_importance=st.session_state.get("feature_importance", {}),
-                    visuals=st.session_state.get("visuals", {}),
-                    generate_pdf=False,
-                )
-            except Exception as e:
-                paths = {"error": str(e)}
+            paths = _try_call_export_report(
+                st.session_state.get("analysis", {}),
+                st.session_state.get("missing", {}),
+                st.session_state.get("quality", {}),
+                st.session_state.get("anomalies", {}),
+                st.session_state.get("drift", {}),
+                st.session_state.get("schema", {}),
+                st.session_state.get("feature_importance", {}),
+                st.session_state.get("visuals", {}),
+            )
             st.session_state["last_report_paths"] = paths
 
     st.session_state["eda_done"] = True
@@ -613,9 +647,10 @@ if st.sidebar.button("Run EDA"):
 # Metrics row (compact)
 # ---------------------------
 analysis = _safe_dict(st.session_state.get("analysis", {}))
-rows = analysis.get("rows", len(df))
-cols = analysis.get("columns", len(df.columns))
+rows = int(analysis.get("rows", len(df)))
+cols = int(analysis.get("columns", len(df.columns)))
 
+# missing total computed defensively
 missing_total = 0
 try:
     missing_struct = _safe_dict(st.session_state.get("missing", {}))
@@ -632,6 +667,7 @@ st.markdown(f"""
 ### Rows: **{rows}**    &nbsp;&nbsp;&nbsp; Columns: **{cols}**    &nbsp;&nbsp;&nbsp; Missing values: **{missing_total}**    &nbsp;&nbsp;&nbsp; Duplicate rows: **0**
 """)
 
+
 # Tabs
 tabs = st.tabs(["Overview", "Schema", "Missing", "Anomalies", "Drift", "Quality", "Feature Importances", "Recommendations", "Report", "Visuals"])
 
@@ -644,33 +680,34 @@ with tabs[0]:
         st.info("EDA not run yet. Click 'Run EDA' to compute analyses.")
     else:
         exec_lines = []
-        exec_lines.append(f"Dataset contains **{rows} rows** and **{cols} columns**.")
-        miss_lines, miss_df = _missing_to_human(st.session_state.get("missing", {}), st.session_state.get("analysis", {}))
+        exec_lines.append(f"Dataset: **{rows} rows** × **{cols} columns**.")
+        # missing
+        miss_lines, miss_df = _missing_to_human(st.session_state.get("missing", {}))
         if miss_df is not None and not miss_df.empty:
-            exec_lines.append(f"Total missing values: **{int(miss_df['missing'].sum())}**. Top missing columns: " +
-                              ", ".join([f"`{c}`" for c in (miss_df.head(3)["column"].tolist())]) + ".")
+            total_miss = int(miss_df["missing"].sum())
+            exec_lines.append(f"Total missing values: **{total_miss}**. Top missing columns: " + ", ".join([f"`{c}`" for c in miss_df.head(3)["column"].tolist()]) + ".")
         else:
             exec_lines.append("No missing values detected.")
-
+        # quality
         q_lines, qdf = _quality_to_human(st.session_state.get("quality", {}))
         if qdf is not None and not qdf.empty:
-            exec_lines.append("Data quality issues found (duplicates / constant cols).")
+            exec_lines.append("Data quality issues detected (see Quality tab).")
         else:
             exec_lines.append("No major data quality issues detected.")
-
+        # anomalies + drift
         anom_lines = _anomalies_to_human(st.session_state.get("anomalies", {}))
         drift_lines = _drift_to_human(st.session_state.get("drift", {}))
 
+        # show bullets succinctly
         for l in exec_lines:
             st.markdown(f"- {l}")
-
         if anom_lines:
-            st.markdown("**Anomalies:**")
-            for l in anom_lines[:5]:
+            st.markdown("**Anomalies (summary):**")
+            for l in anom_lines[:4]:
                 st.markdown(f"- {l}")
         if drift_lines:
-            st.markdown("**Drift:**")
-            for l in drift_lines[:5]:
+            st.markdown("**Drift (summary):**")
+            for l in drift_lines[:4]:
                 st.markdown(f"- {l}")
 
 # -------------
@@ -681,10 +718,7 @@ with tabs[1]:
     if not schema:
         st.info("No schema available.")
     else:
-        df_schema = pd.DataFrame([
-            {"column": col, "dtype": info.get("dtype"), "semantic": info.get("inferred_type")}
-            for col, info in schema.items()
-        ])
+        df_schema = pd.DataFrame([{"column": col, "dtype": info.get("dtype"), "semantic": info.get("inferred_type")} for col, info in schema.items()])
         st.dataframe(df_schema)
 
 # -------------
@@ -692,12 +726,12 @@ with tabs[1]:
 # -------------
 with tabs[2]:
     st.subheader("Missingness Overview")
-    miss_lines, df_missing = _missing_to_human(st.session_state.get("missing", {}), st.session_state.get("analysis", {}))
+    miss_lines, df_missing = _missing_to_human(st.session_state.get("missing", {}))
     for l in miss_lines:
         st.markdown(f"- {l}")
     if df_missing is not None and not df_missing.empty:
-        st.markdown("### Missingness table (top 50)")
-        st.dataframe(df_missing.head(50))
+        st.markdown("### Missingness table (top 200)")
+        st.dataframe(df_missing.head(200))
 
 # -------------
 # ANOMALIES TAB
@@ -711,7 +745,6 @@ with tabs[3]:
         anom_lines = _anomalies_to_human(anomalies)
         for l in anom_lines:
             st.markdown(f"- {l}")
-
         methods = _safe_dict(anomalies.get("methods", {}))
         for method_name, detail in methods.items():
             st.markdown(f"### Method: {method_name}")
@@ -724,7 +757,7 @@ with tabs[3]:
                     count = int(info)
                 else:
                     count = 0
-                rows.append({"column": c, "anomaly_count": count})
+                rows.append({"column": c, "anomaly_count": int(count)})
             if rows:
                 st.dataframe(pd.DataFrame(rows).sort_values("anomaly_count", ascending=False))
 
@@ -734,11 +767,9 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("Dataset Drift")
     drift = _safe_dict(st.session_state.get("drift", {}))
-    if not drift:
-        st.info("No drift data.")
-    else:
-        for l in _drift_to_human(drift):
-            st.markdown(f"- {l}")
+    for l in _drift_to_human(drift):
+        st.markdown(f"- {l}")
+    if drift:
         with st.expander("See raw drift JSON"):
             st.json(drift)
 
@@ -747,26 +778,93 @@ with tabs[4]:
 # -------------
 with tabs[5]:
     st.subheader("Data Quality")
+
     quality = _safe_dict(st.session_state.get("quality", {}))
     q_lines, qdf = _quality_to_human(quality)
+
+    # Render human-readable lines
     for l in q_lines:
         st.markdown(f"- {l}")
-    if qdf is not None and not qdf.empty:
-        st.markdown("### Quality summary table")
-        st.dataframe(qdf)
+
+    # --- Build Enhanced Quality Metrics ---
+    col_count = len(df.columns)
+    row_count = len(df)
+
+    # Missing %
+    missing_struct = _safe_dict(st.session_state.get("missing", {}))
+    percol = _safe_dict(missing_struct.get("per_column", {}))
+    total_missing = sum([v.get("missing", 0) for v in percol.values()]) if percol else 0
+    missing_pct = round((total_missing / (row_count * col_count)) * 100, 2) if row_count and col_count else 0
+
+    # Duplicate %
+    dup_count = quality.get("duplicate_summary", {}).get("duplicate_count", 0)
+    dup_pct = round((dup_count / row_count) * 100, 2) if row_count else 0
+
+    # Constant columns %
+    const_cols = quality.get("constant_summary", {}).get("constant_columns", []) or []
+    const_pct = round((len(const_cols) / col_count) * 100, 2) if col_count else 0
+
+    # Infinite values
+    inf_cols = quality.get("stats_issues", {}).get("infinite_columns", []) if isinstance(quality.get("stats_issues"), dict) else []
+    inf_pct = round((len(inf_cols) / col_count) * 100, 2) if col_count else 0
+
+    # Build enhanced table
+    enhanced_rows = [
+        {"metric": "missing_percent", "value": f"{missing_pct}%"},
+        {"metric": "duplicate_percent", "value": f"{dup_pct}%"},
+        {"metric": "constant_columns_percent", "value": f"{const_pct}%"},
+        {"metric": "infinite_columns_percent", "value": f"{inf_pct}%"},
+        {"metric": "duplicate_rows", "value": dup_count},
+        {"metric": "constant_cols", "value": len(const_cols)},
+        {"metric": "infinite_cols", "value": len(inf_cols)},
+    ]
+
+    # Compute overall quality score
+    # Simple additive penalty system
+    quality_score = 100
+    quality_score -= missing_pct * 0.4
+    quality_score -= dup_pct * 1.0
+    quality_score -= const_pct * 2.5
+    quality_score -= inf_pct * 3.0
+
+    quality_score = max(0, min(100, round(quality_score, 2)))
+
+    st.markdown(f"### Overall Data Quality Score: **{quality_score}/100**")
+
+    st.markdown("### Quality summary table")
+    st.dataframe(pd.DataFrame(enhanced_rows))
+
 
 # -------------
 # FEATURE IMPORTANCES TAB
 # -------------
 with tabs[6]:
-    st.subheader("Feature Importances")
-    fi = _safe_dict(st.session_state.get("feature_importance", {}))
-    fi_lines, fi_df = _format_feature_importance(fi)
-    for l in fi_lines:
-        st.markdown(f"- {l}")
-    if fi_df is not None and not fi_df.empty:
-        st.markdown("### Feature importance table (top 200)")
-        st.dataframe(fi_df.head(200))
+    st.subheader("Feature Importances (aggregated)")
+    fi_state = _safe_dict(st.session_state.get("feature_importance", {}))
+    fi_agg = _safe_dict(fi_state.get("aggregated", {}))
+    # if previously stored aggregated (compatible older shapes)
+    if fi_agg and fi_agg.get("aggregated_scores"):
+        ag_scores = fi_agg.get("aggregated_scores", {})
+        df_ag = pd.DataFrame([{"column": c, "importance": float(v)} for c, v in ag_scores.items()]).sort_values("importance", ascending=False)
+        st.markdown("Top aggregated features:")
+        for _, r in df_ag.head(10).iterrows():
+            st.markdown(f"- `{r['column']}` → {r['importance']:.4f}")
+        st.markdown("### Aggregated feature importance table (top 200)")
+        st.dataframe(df_ag.head(200))
+    else:
+        # try older raw shape
+        raw = _safe_dict(fi_state.get("raw", {}))
+        # if raw aggregated already present
+        if raw and raw.get("aggregated"):
+            ag = raw.get("aggregated")
+            if isinstance(ag, dict) and ag.get("mean_rank"):
+                st.markdown("Feature importance exists (rank aggregation). See raw for details.")
+                with st.expander("Raw feature_importance"):
+                    st.json(raw)
+            else:
+                st.info("No usable feature importance found.")
+        else:
+            st.info("No feature importances available.")
 
 # -------------
 # RECOMMENDATIONS TAB (actionable)
@@ -808,19 +906,20 @@ with tabs[9]:
     st.subheader("Visual panels")
     visuals = st.session_state.get("visuals", {})
     if not visuals:
-        st.info("No visuals produced. Ensure `core.eda.visualize.generate_visual_bundle` exists and returns fig objects or a mapping.")
+        st.info("No visuals produced. Ensure `core.eda.visualize.generate_visual_bundle` exists and returns fig objects or mapping.")
     else:
+        # normalize to iterable of (title, fig)
+        items = []
         if isinstance(visuals, dict):
-            items = visuals.items()
+            items = list(visuals.items())
         elif isinstance(visuals, list):
-            items = []
-            for i, item in enumerate(visuals):
-                if isinstance(item, tuple) and len(item) == 2:
-                    items.append((str(item[0]), item[1]))
+            for i, it in enumerate(visuals):
+                if isinstance(it, tuple) and len(it) == 2:
+                    items.append((str(it[0]), it[1]))
                 else:
-                    items.append((f"visual_{i}", item))
+                    items.append((f"visual_{i}", it))
         else:
-            items = [("__visual__", visuals)]
+            items = [("visual", visuals)]
 
         any_rendered = False
         for title, fig in items:
@@ -829,27 +928,25 @@ with tabs[9]:
                 continue
             st.markdown(f"### {title}")
             rendered = False
-            # matplotlib figure
+            # try plotly
             try:
-                import matplotlib.pyplot as plt
-                from matplotlib.figure import Figure
-                if isinstance(fig, Figure):
-                    st.pyplot(fig)
-                    rendered = True
-            except Exception:
-                pass
-            if rendered:
-                any_rendered = True
-                continue
-            # plotly figure
-            try:
-                import plotly.graph_objs as go  # noqa: F401
-                # simple duck type
-                if hasattr(fig, "to_plotly_json") or "plotly" in str(type(fig)).lower():
+                import plotly.graph_objs as _pg
+                if "plotly" in str(type(fig)).lower() or hasattr(fig, "to_plotly_json") or hasattr(fig, "data"):
                     st.plotly_chart(fig, use_container_width=True)
                     rendered = True
             except Exception:
-                pass
+                rendered = False
+            if rendered:
+                any_rendered = True
+                continue
+            # try matplotlib
+            try:
+                import matplotlib.pyplot as _plt
+                if hasattr(fig, "figure") or hasattr(fig, "savefig") or "matplotlib" in str(type(fig)).lower():
+                    st.pyplot(fig)
+                    rendered = True
+            except Exception:
+                rendered = False
             if rendered:
                 any_rendered = True
                 continue
@@ -860,16 +957,19 @@ with tabs[9]:
                 continue
             # PIL image
             try:
-                from PIL import Image
-                if isinstance(fig, Image.Image):
+                from PIL import Image as _Image
+                if isinstance(fig, _Image.Image):
                     st.image(fig)
                     any_rendered = True
                     continue
             except Exception:
                 pass
             # fallback
-            st.write("Cannot render visual of type:", type(fig))
-            st.write(fig)
+            st.write("Cannot render visual object of type:", type(fig))
+            try:
+                st.write(fig)
+            except Exception:
+                pass
 
         if not any_rendered:
             st.info("No visual objects were renderable. Check the return type of generate_visual_bundle.")

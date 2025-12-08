@@ -175,7 +175,10 @@ def detect_missing_mechanisms(df: pd.DataFrame) -> Dict[str, Any]:
 def summarize_missingness(df: pd.DataFrame) -> Dict[str, Any]:
     """
     Returns the aggregated missingness package for numerics + UI + PDF.
+    Also provides backwards-compatible `per_column` for the Streamlit UI.
     """
+
+    # Compute components
     try:
         col_stats = column_missing_stats(df)
     except Exception:
@@ -201,7 +204,20 @@ def summarize_missingness(df: pd.DataFrame) -> Dict[str, Any]:
     except Exception:
         mech = {"MCAR_like": [], "MAR_like": [], "MNAR_like": []}
 
-    # Create a text summary for LLM or PDF
+    # Build old expected structure for Streamlit UI
+    per_column = {}
+    try:
+        for _, row in col_stats.iterrows():
+            per_column[row["column"]] = {
+                "missing": int(row["missing_count"]),
+                "missing_percent": float(row["missing_percent"]),
+                "dtype": row["dtype"],
+                "unique_non_null": int(row["unique_non_null"])
+            }
+    except Exception:
+        per_column = {}
+
+    # Text summary
     try:
         top_missing = col_stats.nlargest(5, "missing_percent")[["column", "missing_percent"]].to_dict(orient="records")
     except Exception:
@@ -213,7 +229,9 @@ def summarize_missingness(df: pd.DataFrame) -> Dict[str, Any]:
         "explanatory_text": _generate_explanatory_text(top_missing, mech)
     }
 
+    # Final output with backwards compatibility
     return {
+        "per_column": per_column,                   # <--- OLD FORMAT SO UI WORKS
         "column_stats": col_stats.to_dict(orient="records"),
         "row_stats_head": row_stats.head(20).to_dict(orient="records"),
         "missingness_correlation": corr.to_dict(),
@@ -221,6 +239,7 @@ def summarize_missingness(df: pd.DataFrame) -> Dict[str, Any]:
         "mechanisms": mech,
         "text_summary": text_summary
     }
+
 
 
 # -----------------------------------------------------------
